@@ -103,7 +103,7 @@ serve(async (req: Request) => {
   const authz = authorizeOperation(secret, "list-accounts");
   if (!authz.ok) {
     const outcome = authz.status === 401 ? "invalid_credential" : "forbidden_operation";
-    return finish(authz.status, outcome, { error: authz.error }, { errorCode: outcome });
+    return finish(authz.status, outcome, { error: authz.error }, { consumer: authz.entry?.consumer, errorCode: outcome });
   }
   const consumer = authz.entry.consumer;
 

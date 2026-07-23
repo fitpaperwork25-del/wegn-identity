@@ -107,7 +107,7 @@ serve(async (req: Request) => {
   const authz = authorizeOperation(secret, "link-account");
   if (!authz.ok) {
     const outcome = authz.status === 401 ? "invalid_credential" : "forbidden_operation";
-    return finish(authz.status, outcome, { error: authz.error }, { productKey, errorCode: outcome });
+    return finish(authz.status, outcome, { error: authz.error }, { consumer: authz.entry?.consumer, productKey, errorCode: outcome });
   }
   if (!productKey || !productAuthUserId || !email) {
     return finish(400, "validation_failed",

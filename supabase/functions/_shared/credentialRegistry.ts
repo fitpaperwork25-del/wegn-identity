@@ -53,7 +53,13 @@ export function resolveCredential(secret: string): CredentialEntry | null {
   return null;
 }
 
-type AuthzResult = { ok: true; entry: CredentialEntry } | { ok: false; status: number; error: string };
+type AuthzResult =
+  | { ok: true; entry: CredentialEntry }
+  // entry is present on a 403 (the credential resolved to a real
+  // consumer, just not this operation) so callers can still audit which
+  // consumer attempted it - absent on a 401, where there is genuinely no
+  // known consumer to attribute the attempt to.
+  | { ok: false; status: number; error: string; entry?: CredentialEntry };
 
 /**
  * Step 1: is this secret valid, and is it allowed to call this operation
@@ -69,7 +75,7 @@ export function authorizeOperation(secret: string, operation: Operation): AuthzR
     return { ok: false, status: 401, error: "Invalid credentials" };
   }
   if (!entry.allowedOperations.includes(operation)) {
-    return { ok: false, status: 403, error: `This credential is not permitted to call ${operation}` };
+    return { ok: false, status: 403, error: `This credential is not permitted to call ${operation}`, entry };
   }
   return { ok: true, entry };
 }
