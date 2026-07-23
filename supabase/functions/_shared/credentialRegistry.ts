@@ -3,6 +3,8 @@
  * (QRWegn, Wegn Store, Platform Admin) has been cut over and verified;
  * the old shared IDENTITY_SERVICE_SECRET is no longer accepted here, and
  * the secret itself has been deleted from every project that held it.
+ * QRBooker added in Sprint 3A as the fourth consumer, same shape as
+ * QRWegn/Wegn Store from day one - no bootstrap/legacy phase needed.
  *
  * A server-side registry mapping credential -> consumer -> allowed
  * operations -> allowed product key, configured entirely from Supabase
@@ -39,6 +41,11 @@ export function resolveCredential(secret: string): CredentialEntry | null {
   const wegnStore = Deno.env.get("IDENTITY_CREDENTIAL_WEGN_STORE");
   if (wegnStore && secret === wegnStore) {
     return { consumer: "wegn-store", allowedOperations: ["link-account"], allowedProductKey: "wegn-store" };
+  }
+
+  const qrbooker = Deno.env.get("IDENTITY_CREDENTIAL_QRBOOKER");
+  if (qrbooker && secret === qrbooker) {
+    return { consumer: "qrbooker", allowedOperations: ["link-account"], allowedProductKey: "qrbooker" };
   }
 
   const platformAdmin = Deno.env.get("IDENTITY_CREDENTIAL_PLATFORM_ADMIN");
