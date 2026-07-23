@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { authorizeOperation, authorizeProductKey } from "../_shared/credentialRegistry.ts";
 
 /**
  * Task 1 foundation capability - the only thing this service does so
@@ -14,10 +15,11 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
  * product is responsible for only ever invoking this from its own
  * server-side code, after its own auth has already verified the caller).
  *
- * Authorization: a single shared bootstrap secret (IDENTITY_SERVICE_SECRET),
- * not a per-product secret - see README.md's "Security model" section
- * for why this is a deliberate, documented simplification for Task 1,
- * not an oversight. No product is connected to this endpoint yet.
+ * Authorization (Sprint 2 Task 5): a per-consumer scoped credential via
+ * ../_shared/credentialRegistry.ts - each credential is restricted to
+ * link-account only and to its own productKey. The old shared bootstrap
+ * secret (IDENTITY_SERVICE_SECRET) is still honored, unscoped, only until
+ * every consumer has cut over - see credentialRegistry.ts's own header.
  *
  * Idempotent by design, not just by convention: a repeated call for the
  * same (productKey, productAuthUserId) pair returns the existing link
@@ -50,8 +52,7 @@ serve(async (req: Request) => {
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const expectedSecret = Deno.env.get("IDENTITY_SERVICE_SECRET");
-  if (!supabaseUrl || !serviceRoleKey || !expectedSecret) {
+  if (!supabaseUrl || !serviceRoleKey) {
     return jsonResponse({ error: "Server is not configured (missing required secrets)" }, 500);
   }
 
@@ -67,11 +68,16 @@ serve(async (req: Request) => {
   const productAuthUserId = typeof body.productAuthUserId === "string" ? body.productAuthUserId.trim() : "";
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
 
-  if (!secret || secret !== expectedSecret) {
-    return jsonResponse({ error: "Invalid credentials" }, 401);
+  const authz = authorizeOperation(secret, "link-account");
+  if (!authz.ok) {
+    return jsonResponse({ error: authz.error }, authz.status);
   }
   if (!productKey || !productAuthUserId || !email) {
     return jsonResponse({ error: "productKey, productAuthUserId, and email are required" }, 400);
+  }
+  const scopeCheck = authorizeProductKey(authz.entry, productKey);
+  if (!scopeCheck.ok) {
+    return jsonResponse({ error: scopeCheck.error }, scopeCheck.status);
   }
 
   const admin = createClient(supabaseUrl, serviceRoleKey);

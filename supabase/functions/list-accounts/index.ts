@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { authorizeOperation } from "../_shared/credentialRegistry.ts";
 
 /**
  * Sprint 2 Task 3 - read-only operational visibility for Platform Admin.
@@ -9,11 +10,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
  * does that client-side. This function performs no writes and never will
  * - it is the read counterpart to link-account, not a replacement for it.
  *
- * Authorization: the same shared bootstrap secret as link-account
- * (IDENTITY_SERVICE_SECRET) - see README.md's "Security model" section.
- * Platform Admin is this service's second real consumer; it reuses the
- * one bootstrap secret rather than introducing a second one, consistent
- * with that documented simplification.
+ * Authorization (Sprint 2 Task 5): Platform Admin's own scoped credential
+ * via ../_shared/credentialRegistry.ts - permitted to call list-accounts
+ * only, never link-account. The old shared bootstrap secret is still
+ * honored, unscoped, only until every consumer has cut over.
  *
  * Deliberately does NOT return wegn_accounts.email - the requesting
  * page's spec has no email column, and there is no reason for this
@@ -39,8 +39,7 @@ serve(async (req: Request) => {
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const expectedSecret = Deno.env.get("IDENTITY_SERVICE_SECRET");
-  if (!supabaseUrl || !serviceRoleKey || !expectedSecret) {
+  if (!supabaseUrl || !serviceRoleKey) {
     return jsonResponse({ error: "Server is not configured (missing required secrets)" }, 500);
   }
 
@@ -52,8 +51,9 @@ serve(async (req: Request) => {
   }
 
   const secret = typeof body.secret === "string" ? body.secret : "";
-  if (!secret || secret !== expectedSecret) {
-    return jsonResponse({ error: "Invalid credentials" }, 401);
+  const authz = authorizeOperation(secret, "list-accounts");
+  if (!authz.ok) {
+    return jsonResponse({ error: authz.error }, authz.status);
   }
 
   const admin = createClient(supabaseUrl, serviceRoleKey);

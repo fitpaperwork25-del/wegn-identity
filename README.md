@@ -39,18 +39,35 @@ admin tool, the wrong trust domain for public-facing identity) or WSMS
 (explicitly, permanently scoped to subscription lifecycle only, per its
 own ADR-0001).
 
-## Security model (Task 1, bootstrap phase)
+## Security model (Task 5 — per-consumer scoped credentials)
 
-A single shared secret (`IDENTITY_SERVICE_SECRET`, a Supabase Edge
-Function secret — never a database row, never committed) authorizes
-calls to `link-account`. This is a deliberate, documented simplification
-for this foundation task, not an oversight: per-product secrets (the
-pattern WSMS uses) require more than one real consumer to be worth the
-added complexity, and no product is connected yet. Migrating to
-per-product secrets is the natural first hardening step once a second
-real consumer exists — the same "don't extract before a second consumer
-proves the abstraction" principle already governing this ecosystem's
-other shared services.
+Each consumer now authenticates with its own credential, resolved by
+`supabase/functions/_shared/credentialRegistry.ts` — a small, entirely
+env-secret-based registry (no database table; there is no strong reason
+to persist these). Every credential maps to exactly one consumer, one
+set of allowed operations, and (for `link-account`) one permitted
+`productKey`:
+
+| Credential secret                     | Consumer        | Allowed operation | productKey  |
+|----------------------------------------|------------------|--------------------|-------------|
+| `IDENTITY_CREDENTIAL_QRWEGN`            | QRWegn           | `link-account`      | `qrwegn`    |
+| `IDENTITY_CREDENTIAL_WEGN_STORE`        | Wegn Store       | `link-account`      | `wegn-store`|
+| `IDENTITY_CREDENTIAL_PLATFORM_ADMIN`    | Platform Admin   | `list-accounts`     | n/a         |
+
+An unauthorized attempt (invalid credential, wrong operation, or wrong
+productKey) is rejected with a `401` or `403` and never reveals which
+credential value was expected. Both functions log only the resolved
+consumer name on success, never a secret value.
+
+This replaces Task 1's original single shared bootstrap secret
+(`IDENTITY_SERVICE_SECRET`), which existed only because no second real
+consumer existed yet to justify per-consumer scoping — the same
+"don't extract before a second consumer proves the abstraction"
+principle already governing this ecosystem's other shared services.
+Once QRWegn, Wegn Store, and Platform Admin have all cut over to their
+own credential, `IDENTITY_SERVICE_SECRET` support is removed from
+`credentialRegistry.ts` and the secret itself is deleted from every
+project that held it.
 
 ## Local development
 
