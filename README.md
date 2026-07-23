@@ -64,10 +64,10 @@ This replaces Task 1's original single shared bootstrap secret
 consumer existed yet to justify per-consumer scoping — the same
 "don't extract before a second consumer proves the abstraction"
 principle already governing this ecosystem's other shared services.
-Once QRWegn, Wegn Store, and Platform Admin have all cut over to their
-own credential, `IDENTITY_SERVICE_SECRET` support is removed from
-`credentialRegistry.ts` and the secret itself is deleted from every
-project that held it.
+QRWegn, Wegn Store, and Platform Admin have all cut over and been
+verified on their own credential; `IDENTITY_SERVICE_SECRET` is no
+longer accepted by `credentialRegistry.ts`, and the secret itself has
+been deleted from every project that held it.
 
 ## Local development
 

@@ -12,8 +12,9 @@ import { authorizeOperation } from "../_shared/credentialRegistry.ts";
  *
  * Authorization (Sprint 2 Task 5): Platform Admin's own scoped credential
  * via ../_shared/credentialRegistry.ts - permitted to call list-accounts
- * only, never link-account. The old shared bootstrap secret is still
- * honored, unscoped, only until every consumer has cut over.
+ * only, never link-account. The old shared bootstrap secret is no longer
+ * accepted - every consumer has cut over and the secret itself has been
+ * deleted.
  *
  * Deliberately does NOT return wegn_accounts.email - the requesting
  * page's spec has no email column, and there is no reason for this

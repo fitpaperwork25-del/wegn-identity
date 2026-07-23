@@ -1,19 +1,15 @@
 /**
- * Sprint 2 Task 5 - per-consumer scoped credentials, replacing the single
- * shared IDENTITY_SERVICE_SECRET every caller used through Task 4.
+ * Sprint 2 Task 5 - per-consumer scoped credentials. Every consumer
+ * (QRWegn, Wegn Store, Platform Admin) has been cut over and verified;
+ * the old shared IDENTITY_SERVICE_SECRET is no longer accepted here, and
+ * the secret itself has been deleted from every project that held it.
  *
- * Per the task's own design requirement: a server-side registry mapping
- * credential -> consumer -> allowed operations -> allowed product key,
- * configured entirely from Supabase Edge Function secrets (never a
- * database table - there is no strong reason to persist these, and the
- * ecosystem's existing convention for shared-service secrets is already
- * env-based, e.g. WSMS's own per-product secrets).
- *
- * Cutover note: LEGACY_SHARED_SECRET keeps IDENTITY_SERVICE_SECRET valid,
- * unscoped (every operation, any productKey), only until every consumer
- * has been moved to its own scoped credential - see wegn-identity's
- * README.md "Security model" section. Once cutover is verified, delete
- * legacyEntry() and its env var entirely; do not leave it "just in case."
+ * A server-side registry mapping credential -> consumer -> allowed
+ * operations -> allowed product key, configured entirely from Supabase
+ * Edge Function secrets (never a database table - there is no strong
+ * reason to persist these, and the ecosystem's existing convention for
+ * shared-service secrets is already env-based, e.g. WSMS's own
+ * per-product secrets).
  */
 
 export type Operation = "link-account" | "list-accounts";
@@ -21,18 +17,10 @@ export type Operation = "link-account" | "list-accounts";
 export interface CredentialEntry {
   consumer: string;
   allowedOperations: Operation[];
-  /** null = this credential is not restricted to a single productKey
-   *  (used only by the legacy shared secret during cutover; every
-   *  post-cutover scoped credential must set this). */
+  /** The single productKey this credential may use with link-account.
+   *  Every credential in this registry is consumer-specific, so this is
+   *  always set (list-accounts credentials just never consult it). */
   allowedProductKey: string | null;
-}
-
-function legacyEntry(): CredentialEntry {
-  return {
-    consumer: "legacy-shared-secret",
-    allowedOperations: ["link-account", "list-accounts"],
-    allowedProductKey: null,
-  };
 }
 
 /**
@@ -56,11 +44,6 @@ export function resolveCredential(secret: string): CredentialEntry | null {
   const platformAdmin = Deno.env.get("IDENTITY_CREDENTIAL_PLATFORM_ADMIN");
   if (platformAdmin && secret === platformAdmin) {
     return { consumer: "platform-admin", allowedOperations: ["list-accounts"], allowedProductKey: null };
-  }
-
-  const legacy = Deno.env.get("IDENTITY_SERVICE_SECRET");
-  if (legacy && secret === legacy) {
-    return legacyEntry();
   }
 
   return null;

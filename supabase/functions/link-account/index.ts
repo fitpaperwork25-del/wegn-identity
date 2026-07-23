@@ -18,8 +18,8 @@ import { authorizeOperation, authorizeProductKey } from "../_shared/credentialRe
  * Authorization (Sprint 2 Task 5): a per-consumer scoped credential via
  * ../_shared/credentialRegistry.ts - each credential is restricted to
  * link-account only and to its own productKey. The old shared bootstrap
- * secret (IDENTITY_SERVICE_SECRET) is still honored, unscoped, only until
- * every consumer has cut over - see credentialRegistry.ts's own header.
+ * secret (IDENTITY_SERVICE_SECRET) is no longer accepted - every
+ * consumer has cut over and the secret itself has been deleted.
  *
  * Idempotent by design, not just by convention: a repeated call for the
  * same (productKey, productAuthUserId) pair returns the existing link
