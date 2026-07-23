@@ -32,9 +32,15 @@ import { writeAuditLog } from "../_shared/auditLog.ts";
 
 const KNOWN_PRODUCT_KEYS = ["qrwegn", "wegn-store", "qrbooker"] as const;
 
+// Unlike every other Identity operation (called via raw fetch, with a
+// service secret, by another product's server), this one is called
+// directly by a browser via supabase.functions.invoke(), which attaches
+// its own apikey/x-client-info headers automatically - both must be
+// allowed here or the browser blocks the request at the CORS preflight
+// before it's ever sent.
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, content-type, x-request-id",
+  "Access-Control-Allow-Headers": "authorization, content-type, x-request-id, apikey, x-client-info",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Expose-Headers": REQUEST_ID_HEADER,
 };
