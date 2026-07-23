@@ -12,7 +12,7 @@
  * per-product secrets).
  */
 
-export type Operation = "link-account" | "list-accounts";
+export type Operation = "link-account" | "list-accounts" | "health-summary";
 
 export interface CredentialEntry {
   consumer: string;
@@ -43,7 +43,11 @@ export function resolveCredential(secret: string): CredentialEntry | null {
 
   const platformAdmin = Deno.env.get("IDENTITY_CREDENTIAL_PLATFORM_ADMIN");
   if (platformAdmin && secret === platformAdmin) {
-    return { consumer: "platform-admin", allowedOperations: ["list-accounts"], allowedProductKey: null };
+    // Sprint 2 Task 6B: health-summary added to the same read-only
+    // credential - it is operational visibility, not a new capability,
+    // and Platform Admin is the only consumer this task's health
+    // summary is for. Still cannot call link-account.
+    return { consumer: "platform-admin", allowedOperations: ["list-accounts", "health-summary"], allowedProductKey: null };
   }
 
   return null;

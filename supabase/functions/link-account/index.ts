@@ -1,6 +1,9 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { authorizeOperation, authorizeProductKey } from "../_shared/credentialRegistry.ts";
+import { resolveRequestId, REQUEST_ID_HEADER } from "../_shared/requestId.ts";
+import { logEvent } from "../_shared/logger.ts";
+import { writeAuditLog } from "../_shared/auditLog.ts";
 
 /**
  * Task 1 foundation capability - the only thing this service does so
@@ -27,6 +30,13 @@ import { authorizeOperation, authorizeProductKey } from "../_shared/credentialRe
  * network failure, mirroring wegn-wsms's self-register-subscription
  * exactly.
  *
+ * Sprint 2 Task 6B: every outcome (success, invalid credential, forbidden
+ * operation, productKey mismatch, validation failure, internal error) is
+ * both structured-logged and written to identity_audit_log, tagged with
+ * a request ID returned to the caller. Audit writes are best-effort -
+ * see _shared/auditLog.ts - and never block this function's own
+ * response.
+ *
  * Explicitly, deliberately does NOT: create Business Membership, create
  * Staff or Partner records, replace or modify any product's own login,
  * issue any cross-product session or token, or send any invitation.
@@ -35,32 +45,58 @@ import { authorizeOperation, authorizeProductKey } from "../_shared/credentialRe
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "content-type",
+  "Access-Control-Allow-Headers": "content-type, x-request-id",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Expose-Headers": REQUEST_ID_HEADER,
 };
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
+function jsonResponse(requestId: string, body: unknown, status = 200): Response {
+  return new Response(JSON.stringify({ ...(body as Record<string, unknown>), requestId }), {
     status,
-    headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    headers: { ...CORS_HEADERS, "Content-Type": "application/json", [REQUEST_ID_HEADER]: requestId },
   });
 }
 
 serve(async (req: Request) => {
+  const requestId = resolveRequestId(req);
+  const startedAt = Date.now();
+
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
-  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
+  if (req.method !== "POST") return jsonResponse(requestId, { error: "Method not allowed" }, 405);
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!supabaseUrl || !serviceRoleKey) {
-    return jsonResponse({ error: "Server is not configured (missing required secrets)" }, 500);
+    logEvent("error", { requestId, operation: "link-account", outcome: "internal_error", errorCode: "missing_config", durationMs: Date.now() - startedAt });
+    return jsonResponse(requestId, { error: "Server is not configured (missing required secrets)" }, 500);
+  }
+
+  const admin = createClient(supabaseUrl, serviceRoleKey);
+
+  function finish(status: number, outcome: string, body: Record<string, unknown>, extra?: {
+    consumer?: string | null; productKey?: string | null; errorCode?: string | null;
+    wegnAccountId?: string | null; accountLinkId?: string | null;
+  }): Response {
+    const durationMs = Date.now() - startedAt;
+    logEvent(status >= 500 ? "error" : status >= 400 ? "warn" : "info", {
+      requestId, operation: "link-account", outcome,
+      consumer: extra?.consumer, productKey: extra?.productKey, errorCode: extra?.errorCode, durationMs,
+    });
+    // Fire-and-forget from this function's own perspective too - never
+    // await-block the response on the audit write's own latency.
+    void writeAuditLog(admin, {
+      requestId, operation: "link-account", outcome,
+      consumer: extra?.consumer ?? null, productKey: extra?.productKey ?? null,
+      errorCode: extra?.errorCode ?? null, wegnAccountId: extra?.wegnAccountId ?? null, accountLinkId: extra?.accountLinkId ?? null,
+    });
+    return jsonResponse(requestId, body, status);
   }
 
   let body: { secret?: string; productKey?: string; productAuthUserId?: string; email?: string };
   try {
     body = await req.json();
   } catch {
-    return jsonResponse({ error: "Invalid JSON body" }, 400);
+    return finish(400, "validation_failed", { error: "Invalid JSON body" }, { errorCode: "invalid_json" });
   }
 
   const secret = typeof body.secret === "string" ? body.secret : "";
@@ -70,17 +106,21 @@ serve(async (req: Request) => {
 
   const authz = authorizeOperation(secret, "link-account");
   if (!authz.ok) {
-    return jsonResponse({ error: authz.error }, authz.status);
+    const outcome = authz.status === 401 ? "invalid_credential" : "forbidden_operation";
+    return finish(authz.status, outcome, { error: authz.error }, { productKey, errorCode: outcome });
   }
   if (!productKey || !productAuthUserId || !email) {
-    return jsonResponse({ error: "productKey, productAuthUserId, and email are required" }, 400);
+    return finish(400, "validation_failed",
+      { error: "productKey, productAuthUserId, and email are required" },
+      { consumer: authz.entry.consumer, productKey, errorCode: "missing_fields" });
   }
   const scopeCheck = authorizeProductKey(authz.entry, productKey);
   if (!scopeCheck.ok) {
-    return jsonResponse({ error: scopeCheck.error }, scopeCheck.status);
+    return finish(scopeCheck.status, "product_key_mismatch", { error: scopeCheck.error },
+      { consumer: authz.entry.consumer, productKey, errorCode: "product_key_mismatch" });
   }
 
-  const admin = createClient(supabaseUrl, serviceRoleKey);
+  const consumer = authz.entry.consumer;
 
   // Idempotency check first: if this exact (product, product_auth_user_id)
   // pair is already linked, return the existing link rather than
@@ -92,11 +132,12 @@ serve(async (req: Request) => {
     .eq("product_auth_user_id", productAuthUserId)
     .maybeSingle();
   if (existingLinkErr) {
-    console.error("[link-account] existing-link lookup failed:", existingLinkErr);
-    return jsonResponse({ error: "Lookup failed" }, 500);
+    return finish(500, "internal_error", { error: "Lookup failed" },
+      { consumer, productKey, errorCode: "existing_link_lookup_failed" });
   }
   if (existingLink) {
-    return jsonResponse({ ok: true, alreadyLinked: true, wegnAccountId: existingLink.wegn_account_id });
+    return finish(200, "success", { ok: true, alreadyLinked: true, wegnAccountId: existingLink.wegn_account_id },
+      { consumer, productKey, wegnAccountId: existingLink.wegn_account_id, accountLinkId: existingLink.id });
   }
 
   // Find or create the WEGN Account by email. Two products' owners who
@@ -108,8 +149,8 @@ serve(async (req: Request) => {
     .eq("email", email)
     .maybeSingle();
   if (accountLookupErr) {
-    console.error("[link-account] account lookup failed:", accountLookupErr);
-    return jsonResponse({ error: "Lookup failed" }, 500);
+    return finish(500, "internal_error", { error: "Lookup failed" },
+      { consumer, productKey, errorCode: "account_lookup_failed" });
   }
 
   let wegnAccountId = existingAccount?.id as string | undefined;
@@ -120,21 +161,22 @@ serve(async (req: Request) => {
       .select("id")
       .single();
     if (createErr) {
-      console.error("[link-account] account creation failed:", createErr);
-      return jsonResponse({ error: "Account creation failed" }, 500);
+      return finish(500, "internal_error", { error: "Account creation failed" },
+        { consumer, productKey, errorCode: "account_creation_failed" });
     }
     wegnAccountId = newAccount.id;
   }
 
-  const { error: linkErr } = await admin.from("account_links").insert({
-    wegn_account_id: wegnAccountId,
-    product_key: productKey,
-    product_auth_user_id: productAuthUserId,
-  });
+  const { data: newLink, error: linkErr } = await admin
+    .from("account_links")
+    .insert({ wegn_account_id: wegnAccountId, product_key: productKey, product_auth_user_id: productAuthUserId })
+    .select("id")
+    .single();
   if (linkErr) {
-    console.error("[link-account] link creation failed:", linkErr);
-    return jsonResponse({ error: "Link creation failed" }, 500);
+    return finish(500, "internal_error", { error: "Link creation failed" },
+      { consumer, productKey, wegnAccountId, errorCode: "link_creation_failed" });
   }
 
-  return jsonResponse({ ok: true, alreadyLinked: false, wegnAccountId });
+  return finish(200, "success", { ok: true, alreadyLinked: false, wegnAccountId },
+    { consumer, productKey, wegnAccountId, accountLinkId: newLink.id });
 });
