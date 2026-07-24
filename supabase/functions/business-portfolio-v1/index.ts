@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { verifyUserAuth } from "../_shared/verifyUserAuth.ts";
 import { resolveRequestId, REQUEST_ID_HEADER } from "../_shared/requestId.ts";
 import { logEvent } from "../_shared/logger.ts";
@@ -195,6 +195,106 @@ async function loadProductAdapter(
   }
 }
 
+type TeamMember = {
+  membershipId: string;
+  accountId: string;
+  email: string;
+  role: "owner" | "administrator" | "member";
+  grantedAt: string;
+};
+
+type PendingInvite = {
+  inviteId: string;
+  email: string;
+  role: "administrator" | "member";
+  invitedAt: string;
+  expiresAt: string;
+};
+
+/**
+ * Phase 2A-3 - team roster for the Business Workspace Team tab.
+ * Deliberately separate from normalizeBusiness rather than folded into
+ * it: team data is only ever needed for the single-business detail
+ * path, so running it for every business in the list path would be
+ * pure overhead for a field nobody reads there.
+ */
+async function loadTeamRoster(
+  admin: SupabaseClient,
+  businessId: string,
+): Promise<{ members: TeamMember[]; pendingInvites: PendingInvite[] }> {
+  const nowIso = new Date().toISOString();
+  const [membershipResult, inviteResult] = await Promise.all([
+    admin
+      .from("wegn_business_memberships")
+      .select("id, role, granted_at, wegn_accounts!inner(id, email)")
+      .eq("wegn_business_id", businessId)
+      .eq("access_status", "active")
+      .lte("valid_from", nowIso)
+      .or(`valid_until.is.null,valid_until.gt.${nowIso}`),
+    admin
+      .from("wegn_business_invites")
+      .select("id, email, role, invited_at, expires_at")
+      .eq("wegn_business_id", businessId)
+      .eq("status", "pending")
+      .gt("expires_at", nowIso),
+  ]);
+
+  const members = ((membershipResult.data ?? []) as Array<{
+    id: string; role: TeamMember["role"]; granted_at: string;
+    wegn_accounts: { id: string; email: string } | { id: string; email: string }[];
+  }>).map((row) => {
+    // Same to-one join inference gap fixed elsewhere in this codebase -
+    // wegn_accounts!inner(...) is a to-one FK but the untyped client
+    // infers it as an array.
+    const accountRow = Array.isArray(row.wegn_accounts) ? row.wegn_accounts[0] : row.wegn_accounts;
+    return {
+      membershipId: row.id,
+      accountId: accountRow?.id ?? "",
+      email: accountRow?.email ?? "",
+      role: row.role,
+      grantedAt: row.granted_at,
+    };
+  });
+
+  const pendingInvites = ((inviteResult.data ?? []) as Array<{
+    id: string; email: string; role: PendingInvite["role"]; invited_at: string; expires_at: string;
+  }>).map((row) => ({
+    inviteId: row.id,
+    email: row.email,
+    role: row.role,
+    invitedAt: row.invited_at,
+    expiresAt: row.expires_at,
+  }));
+
+  return { members, pendingInvites };
+}
+
+/** Invites addressed to the caller's own email, across any business - surfaced on the list path since the invitee has no membership yet to view a specific Workspace through. */
+async function loadMyPendingInvites(admin: SupabaseClient, email: string) {
+  const nowIso = new Date().toISOString();
+  const { data } = await admin
+    .from("wegn_business_invites")
+    .select("id, role, invited_at, expires_at, wegn_businesses!inner(id, display_name)")
+    .eq("email", email)
+    .eq("status", "pending")
+    .gt("expires_at", nowIso);
+
+  return ((data ?? []) as Array<{
+    id: string; role: PendingInvite["role"]; invited_at: string; expires_at: string;
+    wegn_businesses: { id: string; display_name: string } | { id: string; display_name: string }[];
+  }>).map((row) => {
+    const businessRow = Array.isArray(row.wegn_businesses) ? row.wegn_businesses[0] : row.wegn_businesses;
+    return {
+      inviteId: row.id,
+      businessId: businessRow?.id ?? "",
+      businessName: businessRow?.display_name ?? "",
+      role: row.role,
+      invitedAt: row.invited_at,
+      expiresAt: row.expires_at,
+    };
+  });
+}
+
 async function loadWsms(
   links: Array<{ productKey: string; externalBusinessId: string }>,
   requestId: string,
@@ -339,6 +439,7 @@ serve(async (req: Request) => {
     authorizedBusinessCount: registryBusinesses.length,
   })) {
     const generatedAt = new Date().toISOString();
+    const myPendingInvites = isSingleBusinessRequest ? [] : await loadMyPendingInvites(admin, email);
     void writeAuditLog(admin, {
       requestId, operation: "business-portfolio-v1", outcome: "confirmed_zero",
       consumer: "wegn-home", wegnAccountId: account.id,
@@ -349,6 +450,7 @@ serve(async (req: Request) => {
       freshness: { state: "fresh", oldestRequiredSourceAt: generatedAt },
       kpis: { totalBusinesses: 0, healthyBusinesses: 0, businessesNeedingAttention: 0 },
       businesses: [],
+      ...(isSingleBusinessRequest ? {} : { myPendingInvites }),
       sources: [{ source: "business_registry", state: "fresh", asOf: generatedAt }],
       page: { limit, nextCursor: null },
     });
@@ -426,6 +528,11 @@ serve(async (req: Request) => {
   const generatedAt = new Date().toISOString();
   const sourceDates = sourceRows.map((source) => source.asOf).filter((value): value is string => !!value).sort();
 
+  const team = isSingleBusinessRequest && pageBusinesses[0]
+    ? await loadTeamRoster(admin, pageBusinesses[0].id)
+    : null;
+  const myPendingInvites = isSingleBusinessRequest ? null : await loadMyPendingInvites(admin, email);
+
   logEvent("info", {
     requestId,
     operation: "business-portfolio-v1",
@@ -449,6 +556,8 @@ serve(async (req: Request) => {
       businessesNeedingAttention: normalized.filter((business) => business.health.status === "needs_attention").length,
     },
     businesses: pageBusinesses.map(({ _sort: _discard, ...business }) => business),
+    ...(team ? { team } : {}),
+    ...(myPendingInvites ? { myPendingInvites } : {}),
     sources: sourceRows,
     page: { limit, nextCursor },
   });
