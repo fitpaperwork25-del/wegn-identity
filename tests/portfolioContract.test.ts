@@ -60,9 +60,14 @@ function wsms(
         externalBusinessId: "00000000-0000-0000-0000-000000000101",
         subscriptionStatus: status,
         serviceAccess: serviceAccess ?? (status === "grace_period" ? "restricted" : status === "suspended" ? "suspended" : "available"),
+        currentPeriodStart: null,
         currentPeriodEnd: null,
         gracePeriodEndsAt: null,
         cancelAtPeriodEnd: false,
+        plan: "Growth",
+        billingInterval: "monthly",
+        amount: 1200,
+        currency: "ETB",
       }]])
       : new Map(),
   };

@@ -42,9 +42,14 @@ export type WsmsTenant = {
   externalBusinessId: string;
   subscriptionStatus: string | null;
   serviceAccess: "available" | "restricted" | "suspended" | "unavailable" | "unknown";
+  currentPeriodStart: string | null;
   currentPeriodEnd: string | null;
   gracePeriodEndsAt: string | null;
   cancelAtPeriodEnd: boolean | null;
+  plan: string | null;
+  billingInterval: string | null;
+  amount: number | null;
+  currency: string | null;
 };
 
 export type AdapterResult = {
@@ -130,7 +135,11 @@ export function normalizeBusiness(params: {
         productKey: product.productKey,
         displayName: product.displayName,
         connection: { status: "not_connected", verifiedAt: null },
-        subscription: { status: "not_applicable", source: "wsms", sourceStatus: null, asOf: wsms.asOf },
+        subscription: {
+          status: "not_applicable", source: "wsms", sourceStatus: null, asOf: wsms.asOf,
+          currentPeriodStart: null, currentPeriodEnd: null, gracePeriodEndsAt: null, cancelAtPeriodEnd: null,
+          plan: null, billingInterval: null, amount: null, currency: null,
+        },
         serviceAccess: { status: "not_applicable", source: "wsms", asOf: wsms.asOf },
         attention: [],
         activityAvailable: false,
@@ -224,8 +233,14 @@ export function normalizeBusiness(params: {
         source: "wsms",
         sourceStatus: tenant?.subscriptionStatus ?? null,
         asOf: wsms.asOf,
+        currentPeriodStart: tenant?.currentPeriodStart ?? null,
         currentPeriodEnd: tenant?.currentPeriodEnd ?? null,
         gracePeriodEndsAt: tenant?.gracePeriodEndsAt ?? null,
+        cancelAtPeriodEnd: tenant?.cancelAtPeriodEnd ?? null,
+        plan: tenant?.plan ?? null,
+        billingInterval: tenant?.billingInterval ?? null,
+        amount: tenant?.amount ?? null,
+        currency: tenant?.currency ?? null,
       },
       serviceAccess: { status: serviceAccess, source: "wsms", asOf: wsms.asOf },
       attention: productAttention,
