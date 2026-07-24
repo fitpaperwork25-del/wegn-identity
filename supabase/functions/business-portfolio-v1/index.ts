@@ -195,6 +195,30 @@ async function loadProductAdapter(
   }
 }
 
+const KNOWN_ALERT_CODES = ["payment_due", "trial_ending", "service_suspended", "setup_incomplete"] as const;
+type AlertCode = (typeof KNOWN_ALERT_CODES)[number];
+
+type NotificationPreference = { alertCode: AlertCode; channel: "email"; enabled: boolean };
+
+/**
+ * Phase 2A-4 - resolves the full known-alert-code x email matrix, since
+ * a missing row means "default (enabled)" (20260724020000's own
+ * comment) - the frontend should never have to compute that default
+ * itself.
+ */
+async function loadNotificationPreferences(admin: SupabaseClient, businessId: string): Promise<NotificationPreference[]> {
+  const { data } = await admin
+    .from("wegn_business_notification_preferences")
+    .select("alert_code, channel, enabled")
+    .eq("wegn_business_id", businessId)
+    .eq("channel", "email");
+  const overrides = new Map(((data ?? []) as Array<{ alert_code: AlertCode; channel: "email"; enabled: boolean }>)
+    .map((row) => [row.alert_code, row.enabled]));
+  return KNOWN_ALERT_CODES.map((alertCode) => ({
+    alertCode, channel: "email" as const, enabled: overrides.get(alertCode) ?? true,
+  }));
+}
+
 type TeamMember = {
   membershipId: string;
   accountId: string;
@@ -531,6 +555,9 @@ serve(async (req: Request) => {
   const team = isSingleBusinessRequest && pageBusinesses[0]
     ? await loadTeamRoster(admin, pageBusinesses[0].id)
     : null;
+  const notificationPreferences = isSingleBusinessRequest && pageBusinesses[0]
+    ? await loadNotificationPreferences(admin, pageBusinesses[0].id)
+    : null;
   const myPendingInvites = isSingleBusinessRequest ? null : await loadMyPendingInvites(admin, email);
 
   logEvent("info", {
@@ -557,6 +584,7 @@ serve(async (req: Request) => {
     },
     businesses: pageBusinesses.map(({ _sort: _discard, ...business }) => business),
     ...(team ? { team } : {}),
+    ...(notificationPreferences ? { notificationPreferences } : {}),
     ...(myPendingInvites ? { myPendingInvites } : {}),
     sources: sourceRows,
     page: { limit, nextCursor },
