@@ -59,6 +59,12 @@ export type WsmsResult = {
   tenants: Map<string, WsmsTenant>;
 };
 
+export type DestinationRow = {
+  product_key: string;
+  base_url: string;
+  url_template: string | null;
+};
+
 type Attention = {
   code: "payment_due" | "trial_ending" | "service_suspended" | "setup_incomplete";
   severity: "critical" | "warning" | "information";
@@ -83,6 +89,18 @@ function productKey(productKey: string, externalBusinessId: string): string {
   return `${productKey}:${externalBusinessId}`;
 }
 
+function resolveLaunch(
+  destinations: Map<string, DestinationRow>,
+  productKey: string,
+  externalBusinessId: string | null,
+): { availability: "available" | "unavailable"; destination: string | null } {
+  const row = destinations.get(productKey);
+  if (!row) return { availability: "unavailable", destination: null };
+  if (!row.url_template) return { availability: "available", destination: row.base_url };
+  if (!externalBusinessId) return { availability: "unavailable", destination: null };
+  return { availability: "available", destination: row.url_template.replaceAll("{externalBusinessId}", externalBusinessId) };
+}
+
 function attentionRank(attention: Attention[]): number {
   if (attention.some((item) => item.severity === "critical")) return 0;
   if (attention.some((item) => item.severity === "warning")) return 1;
@@ -93,9 +111,10 @@ export function normalizeBusiness(params: {
   business: RegistryBusiness;
   adapters: Map<string, AdapterResult>;
   wsms: WsmsResult;
+  destinations: Map<string, DestinationRow>;
   now: Date;
 }) {
-  const { business, adapters, wsms, now } = params;
+  const { business, adapters, wsms, destinations, now } = params;
   const links = new Map(business.productLinks.map((link) => [link.product_key, link]));
   const attention: Attention[] = [];
   const activities: Array<{ id: string; category: string; summary: string; occurredAt: string; productKey: string }> = [];
@@ -115,6 +134,7 @@ export function normalizeBusiness(params: {
         serviceAccess: { status: "not_applicable", source: "wsms", asOf: wsms.asOf },
         attention: [],
         activityAvailable: false,
+        launch: { availability: "unavailable" as const, destination: null },
       };
     }
 
@@ -210,6 +230,7 @@ export function normalizeBusiness(params: {
       serviceAccess: { status: serviceAccess, source: "wsms", asOf: wsms.asOf },
       attention: productAttention,
       activityAvailable: !!productBusiness,
+      launch: resolveLaunch(destinations, product.productKey, link.external_business_id),
     };
   });
 

@@ -329,17 +329,19 @@ serve(async (req: Request) => {
     }
   }
 
-  const [adapterEntries, wsms] = await Promise.all([
+  const [adapterEntries, wsms, destinationRows] = await Promise.all([
     Promise.all(KNOWN_PRODUCTS.map(async ({ productKey }) => [
       productKey,
       await loadProductAdapter(productKey, idsByProduct.get(productKey) ?? [], requestId, issuedAt, expiresAt),
     ] as const)),
     loadWsms(allLinks, requestId, issuedAt, expiresAt),
+    admin.from("wegn_product_destinations").select("product_key, base_url, url_template"),
   ]);
   const adapters = new Map(adapterEntries);
+  const destinations = new Map((destinationRows.data ?? []).map((row) => [row.product_key, row]));
 
   const normalized = registryBusinesses
-    .map((business) => normalizeBusiness({ business, adapters, wsms, now }))
+    .map((business) => normalizeBusiness({ business, adapters, wsms, destinations, now }))
     .sort(compareBusinesses);
 
   let startIndex = 0;
