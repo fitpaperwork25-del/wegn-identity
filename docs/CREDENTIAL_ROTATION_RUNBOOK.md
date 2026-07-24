@@ -116,6 +116,96 @@ for a graceful rotation:
 3. Generate a new credential (Step 1) and restore service for that consumer as quickly as possible (Steps 2–4, but you can skip the dual-accept bake period given the urgency — go straight to setting the new value as the primary env var on both sides).
 4. Review `identity_audit_log` for the revoked credential's `consumer` name over the suspected exposure window, looking for any `outcome: "success"` rows you cannot account for.
 
+## 8. Business Registry credentials (Sprint 5 Phase 1B)
+
+Sprint 5 Phase 1B added a second, separate credential per consumer,
+scoped to a different operation (`register-business-link` instead of
+`link-account`) and read from a different env var namespace
+(`IDENTITY_REGISTRY_CREDENTIAL_*` instead of `IDENTITY_CREDENTIAL_*`).
+These are independent secrets from the ones in Section 0 above —
+rotating one does not affect the other, and both may exist for the same
+consumer at the same time.
+
+| Consumer | Env var | Allowed operation | Allowed productKey |
+|---|---|---|---|
+| QRWegn | `IDENTITY_REGISTRY_CREDENTIAL_QRWEGN` | `register-business-link` | `qrwegn` |
+| Wegn Store | `IDENTITY_REGISTRY_CREDENTIAL_WEGN_STORE` | `register-business-link` | `wegn-store` |
+| QRBooker | `IDENTITY_REGISTRY_CREDENTIAL_QRBOOKER` | `register-business-link` | `qrbooker` |
+
+As of this sprint, all three exist only on the isolated staging project
+(`wegn-identity-staging`, ref `whyvwahhshzctwtaooek`) — freshly generated
+for staging, not copied from any production value. No production
+equivalent has been created yet. They flow through the same
+`resolveCredentialFromEnv` dispatch in `credentialRegistry.ts` as the
+Section 0 credentials, so the rotation procedure in Steps 1-7 above
+applies to them unchanged once a production instance exists — substitute
+the `IDENTITY_REGISTRY_CREDENTIAL_*` var name and the
+`register-business-link` operation wherever those steps reference
+`IDENTITY_CREDENTIAL_*` and `link-account`.
+
+A fourth secret, `PORTFOLIO_CURSOR_SECRET`, was also generated for
+staging this sprint. It is **not** a consumer credential — it is an
+internal HMAC signing key used only inside `business-portfolio-v1` to
+sign and verify its own pagination cursors, never presented by or to any
+external consumer — so the dual-accept rotation procedure in this
+runbook does not apply to it. Rotating it simply invalidates any cursor
+issued before the rotation (a client re-requesting page 1 recovers
+immediately); a plain `supabase secrets set PORTFOLIO_CURSOR_SECRET=<new-value>`
+is sufficient.
+
+## 9. Deployment checklist: SECURITY DEFINER functions (added Sprint 5 Phase 1C)
+
+Discovered during the first isolated staging deployment of the Business
+Registry: `REVOKE ALL ON FUNCTION ... FROM PUBLIC` does **not** revoke
+the `EXECUTE` privilege Supabase grants automatically to `anon` and
+`authenticated` via schema-level default privileges on every new
+`public`-schema function. `PUBLIC` and `anon`/`authenticated` are
+distinct grantees — revoking from one does not touch a privilege held
+directly by the other.
+
+The original Business Registry migration
+(`20260723020000_business_registry_foundation.sql`) shipped with exactly
+this gap: three `SECURITY DEFINER` functions —
+`resolve_or_create_wegn_account`, `create_wegn_business_with_owner`, and
+`register_wegn_business_product_link` — intended to be `service_role`-only
+remained callable by an anonymous client holding nothing but the
+project's public anon key, bypassing every credential check in every
+Edge Function that was supposed to gate access to them. It was caught by
+post-deployment smoke testing (not by code review) and closed with a
+follow-up migration, `20260723030000_revoke_registry_function_public_access.sql`.
+
+**Checklist — before any migration that creates or replaces a
+`SECURITY DEFINER` function ships, even to staging:**
+
+- [ ] Every `SECURITY DEFINER` function intended to be non-public has a
+      revoke statement that explicitly names `anon` and `authenticated`,
+      not just `PUBLIC`:
+      ```sql
+      REVOKE ALL ON FUNCTION <signature> FROM PUBLIC, anon, authenticated;
+      GRANT EXECUTE ON FUNCTION <signature> TO service_role;
+      ```
+- [ ] After deploying (staging or otherwise), verify the revoke actually
+      took effect by attempting a direct anonymous RPC call and
+      confirming it fails closed:
+      ```bash
+      curl -s -X POST "<project-url>/rest/v1/rpc/<function_name>" \
+        -H "apikey: <anon-key>" -H "Authorization: Bearer <anon-key>" \
+        -H "Content-Type: application/json" -d '<minimal-plausible-body>'
+      # expected: HTTP 401, {"code":"42501","message":"permission denied for function <function_name>"}
+      ```
+      A `200` (or any response other than `42501`) here means the
+      function is reachable by unauthenticated clients — do not proceed
+      regardless of how solid the Edge Function layer's own auth checks
+      look, since this bypasses them entirely.
+- [ ] Confirm the intended caller (`service_role`, or a narrower role if
+      applicable) can still execute the function after the revoke — a
+      revoke that's too broad silently breaks the feature instead of
+      just closing a hole.
+- [ ] Treat `REVOKE ... FROM PUBLIC` alone as insufficient evidence of a
+      locked-down function in code review — it is not confirmed closed
+      until the anonymous-RPC check above has actually been run against
+      a live database.
+
 ## Evidence to capture during any rotation
 
 - Reason for rotation, and who requested/approved it.
