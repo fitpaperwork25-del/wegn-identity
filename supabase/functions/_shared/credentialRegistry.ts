@@ -14,7 +14,7 @@
  * per-product secrets).
  */
 
-export type Operation = "link-account" | "list-accounts" | "health-summary";
+export type Operation = "link-account" | "register-business-link" | "list-accounts" | "health-summary";
 
 export interface CredentialEntry {
   consumer: string;
@@ -30,25 +30,42 @@ export interface CredentialEntry {
  * secret matches nothing configured. Never logs or returns the secret
  * value itself - only ever the resolved consumer name.
  */
-export function resolveCredential(secret: string): CredentialEntry | null {
+export type CredentialEnvReader = (name: string) => string | undefined;
+
+export function resolveCredentialFromEnv(secret: string, readEnv: CredentialEnvReader): CredentialEntry | null {
   if (!secret) return null;
 
-  const qrwegn = Deno.env.get("IDENTITY_CREDENTIAL_QRWEGN");
+  const qrwegn = readEnv("IDENTITY_CREDENTIAL_QRWEGN");
   if (qrwegn && secret === qrwegn) {
     return { consumer: "qrwegn", allowedOperations: ["link-account"], allowedProductKey: "qrwegn" };
   }
 
-  const wegnStore = Deno.env.get("IDENTITY_CREDENTIAL_WEGN_STORE");
+  const wegnStore = readEnv("IDENTITY_CREDENTIAL_WEGN_STORE");
   if (wegnStore && secret === wegnStore) {
     return { consumer: "wegn-store", allowedOperations: ["link-account"], allowedProductKey: "wegn-store" };
   }
 
-  const qrbooker = Deno.env.get("IDENTITY_CREDENTIAL_QRBOOKER");
+  const qrbooker = readEnv("IDENTITY_CREDENTIAL_QRBOOKER");
   if (qrbooker && secret === qrbooker) {
     return { consumer: "qrbooker", allowedOperations: ["link-account"], allowedProductKey: "qrbooker" };
   }
 
-  const platformAdmin = Deno.env.get("IDENTITY_CREDENTIAL_PLATFORM_ADMIN");
+  const registryQrwegn = readEnv("IDENTITY_REGISTRY_CREDENTIAL_QRWEGN");
+  if (registryQrwegn && secret === registryQrwegn) {
+    return { consumer: "qrwegn-registry", allowedOperations: ["register-business-link"], allowedProductKey: "qrwegn" };
+  }
+
+  const registryWegnStore = readEnv("IDENTITY_REGISTRY_CREDENTIAL_WEGN_STORE");
+  if (registryWegnStore && secret === registryWegnStore) {
+    return { consumer: "wegn-store-registry", allowedOperations: ["register-business-link"], allowedProductKey: "wegn-store" };
+  }
+
+  const registryQrbooker = readEnv("IDENTITY_REGISTRY_CREDENTIAL_QRBOOKER");
+  if (registryQrbooker && secret === registryQrbooker) {
+    return { consumer: "qrbooker-registry", allowedOperations: ["register-business-link"], allowedProductKey: "qrbooker" };
+  }
+
+  const platformAdmin = readEnv("IDENTITY_CREDENTIAL_PLATFORM_ADMIN");
   if (platformAdmin && secret === platformAdmin) {
     // Sprint 2 Task 6B: health-summary added to the same read-only
     // credential - it is operational visibility, not a new capability,
@@ -58,6 +75,10 @@ export function resolveCredential(secret: string): CredentialEntry | null {
   }
 
   return null;
+}
+
+export function resolveCredential(secret: string): CredentialEntry | null {
+  return resolveCredentialFromEnv(secret, (name) => Deno.env.get(name));
 }
 
 type AuthzResult =
