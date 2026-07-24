@@ -31,6 +31,53 @@ const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 const ADAPTER_TIMEOUT_MS = 5_000;
 const MEMBERSHIP_PAGE_SIZE = 500;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const MEMBERSHIP_SELECT = `
+  role,
+  wegn_businesses!inner(
+    id, display_name, business_type, country_code, lifecycle_status, updated_at,
+    wegn_business_product_links(product_key, external_business_id, verified_at, link_status)
+  )
+`;
+
+type MembershipRow = {
+  role: RegistryBusiness["role"];
+  wegn_businesses: {
+    id: string;
+    display_name: string;
+    business_type: string | null;
+    country_code: string | null;
+    lifecycle_status: RegistryBusiness["lifecycle_status"];
+    updated_at: string;
+    wegn_business_product_links: Array<{
+      product_key: string;
+      external_business_id: string;
+      verified_at: string;
+      link_status: string;
+    }>;
+  };
+};
+
+function mapMembershipRow(membership: MembershipRow): RegistryBusiness {
+  const business = membership.wegn_businesses as unknown as MembershipRow["wegn_businesses"];
+  return {
+    id: business.id,
+    display_name: business.display_name,
+    business_type: business.business_type,
+    country_code: business.country_code,
+    lifecycle_status: business.lifecycle_status,
+    updated_at: business.updated_at,
+    role: membership.role,
+    productLinks: (business.wegn_business_product_links ?? [])
+      .filter((link) => link.link_status === "active")
+      .map((link) => ({
+        product_key: link.product_key,
+        external_business_id: link.external_business_id,
+        verified_at: link.verified_at,
+      })),
+  };
+}
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -199,7 +246,11 @@ serve(async (req: Request) => {
   const limitText = url.searchParams.get("limit");
   const limit = limitText === null ? DEFAULT_LIMIT : Number(limitText);
   const cursorText = url.searchParams.get("cursor");
+  const businessIdText = url.searchParams.get("businessId");
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
+    return errorResponse(requestId, 400, "INVALID_REQUEST", "The portfolio request is invalid.", false);
+  }
+  if (businessIdText !== null && !UUID_PATTERN.test(businessIdText)) {
     return errorResponse(requestId, 400, "INVALID_REQUEST", "The portfolio request is invalid.", false);
   }
 
@@ -235,64 +286,52 @@ serve(async (req: Request) => {
 
   const now = new Date();
   const nowIso = now.toISOString();
-  const { data: memberships, error: membershipError } = await collectAllPages({
-    pageSize: MEMBERSHIP_PAGE_SIZE,
-    fetchPage: async (from, to) => {
-      const result = await admin
-        .from("wegn_business_memberships")
-        .select(`
-          role,
-          wegn_businesses!inner(
-            id, display_name, business_type, country_code, lifecycle_status, updated_at,
-            wegn_business_product_links(product_key, external_business_id, verified_at, link_status)
-          )
-        `)
-        .eq("wegn_account_id", account.id)
-        .eq("access_status", "active")
-        .lte("valid_from", nowIso)
-        .or(`valid_until.is.null,valid_until.gt.${nowIso}`)
-        .order("wegn_business_id", { ascending: true })
-        .range(from, to);
-      return { data: result.data, error: result.error };
-    },
-  });
+  const isSingleBusinessRequest = businessIdText !== null;
 
-  if (membershipError) {
-    return errorResponse(requestId, 503, "PORTFOLIO_UNAVAILABLE", "The business portfolio is temporarily unavailable.", true);
+  let membershipRows: MembershipRow[];
+  if (isSingleBusinessRequest) {
+    // Single-business detail read (Business Workspace, Phase 2A-1). One
+    // authorized-membership row at most - never a list, never paginated.
+    // A business that doesn't exist and a business that exists but isn't
+    // this caller's produce the identical empty result below (see the
+    // confirmed-zero-shaped response that follows), so a probing caller
+    // cannot distinguish "not found" from "not authorized."
+    const result = await admin
+      .from("wegn_business_memberships")
+      .select(MEMBERSHIP_SELECT)
+      .eq("wegn_account_id", account.id)
+      .eq("wegn_business_id", businessIdText)
+      .eq("access_status", "active")
+      .lte("valid_from", nowIso)
+      .or(`valid_until.is.null,valid_until.gt.${nowIso}`)
+      .limit(1);
+    if (result.error) {
+      return errorResponse(requestId, 503, "PORTFOLIO_UNAVAILABLE", "The business portfolio is temporarily unavailable.", true);
+    }
+    membershipRows = (result.data ?? []) as unknown as MembershipRow[];
+  } else {
+    const { data: memberships, error: membershipError } = await collectAllPages({
+      pageSize: MEMBERSHIP_PAGE_SIZE,
+      fetchPage: async (from, to) => {
+        const result = await admin
+          .from("wegn_business_memberships")
+          .select(MEMBERSHIP_SELECT)
+          .eq("wegn_account_id", account.id)
+          .eq("access_status", "active")
+          .lte("valid_from", nowIso)
+          .or(`valid_until.is.null,valid_until.gt.${nowIso}`)
+          .order("wegn_business_id", { ascending: true })
+          .range(from, to);
+        return { data: result.data, error: result.error };
+      },
+    });
+    if (membershipError) {
+      return errorResponse(requestId, 503, "PORTFOLIO_UNAVAILABLE", "The business portfolio is temporarily unavailable.", true);
+    }
+    membershipRows = (memberships ?? []) as unknown as MembershipRow[];
   }
 
-  const registryBusinesses: RegistryBusiness[] = (memberships ?? []).map((membership) => {
-    const business = membership.wegn_businesses as unknown as {
-      id: string;
-      display_name: string;
-      business_type: string | null;
-      country_code: string | null;
-      lifecycle_status: RegistryBusiness["lifecycle_status"];
-      updated_at: string;
-      wegn_business_product_links: Array<{
-        product_key: string;
-        external_business_id: string;
-        verified_at: string;
-        link_status: string;
-      }>;
-    };
-    return {
-      id: business.id,
-      display_name: business.display_name,
-      business_type: business.business_type,
-      country_code: business.country_code,
-      lifecycle_status: business.lifecycle_status,
-      updated_at: business.updated_at,
-      role: membership.role,
-      productLinks: (business.wegn_business_product_links ?? [])
-        .filter((link) => link.link_status === "active")
-        .map((link) => ({
-          product_key: link.product_key,
-          external_business_id: link.external_business_id,
-          verified_at: link.verified_at,
-        })),
-    };
-  });
+  const registryBusinesses: RegistryBusiness[] = membershipRows.map(mapMembershipRow);
 
   if (canReturnConfirmedZero({
     accountStatus: account.status,
@@ -345,7 +384,7 @@ serve(async (req: Request) => {
     .sort(compareBusinesses);
 
   let startIndex = 0;
-  if (cursorText) {
+  if (cursorText && !isSingleBusinessRequest) {
     const cursor = await parsePortfolioCursor({
       secret: cursorSecret,
       value: cursorText,
