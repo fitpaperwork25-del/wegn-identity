@@ -455,7 +455,22 @@ serve(async (req: Request) => {
     membershipRows = (memberships ?? []) as unknown as MembershipRow[];
   }
 
-  const registryBusinesses: RegistryBusiness[] = membershipRows.map(mapMembershipRow);
+  const allRegistryBusinesses: RegistryBusiness[] = membershipRows.map(mapMembershipRow);
+
+  // Archiving a business (lifecycle_status: "archived") never touches its
+  // memberships - business_requires_active_owner and
+  // preserve_revoked_membership_history make memberships effectively
+  // permanent once a business has an owner, so archiving is the only
+  // available "this is no longer active" signal (see
+  // SPRINT5_PHASE1B_PORTFOLIO_BACKEND_DESIGN_FREEZE.md's lifecycle
+  // transitions and My Businesses' own "Archived: retained but no longer
+  // active" status meaning). The default list/KPIs must not surface an
+  // archived business as if it were still operated. Single-business detail
+  // reads (Business Workspace) deliberately keep working by ID - archived
+  // is "no longer active," not "gone."
+  const registryBusinesses = isSingleBusinessRequest
+    ? allRegistryBusinesses
+    : allRegistryBusinesses.filter((business) => business.lifecycle_status !== "archived");
 
   if (canReturnConfirmedZero({
     accountStatus: account.status,
